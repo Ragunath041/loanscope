@@ -1,3 +1,4 @@
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -6,7 +7,8 @@ from sklearn.ensemble import RandomForestRegressor
 import pickle
 import os
 import firebase_admin
-from firebase_admin import credentials, ml
+from firebase_admin import credentials, storage, ml
+import tensorflow as tf
 
 class CibilScoreModel:
     def __init__(self):
@@ -14,6 +16,7 @@ class CibilScoreModel:
         self.scaler = StandardScaler()
         self.model_path = 'model/cibil_model.pkl'
         self.scaler_path = 'model/scaler.pkl'
+        self.tflite_path = 'model/cibil_model.tflite'
         
     def prepare_data(self):
         try:
@@ -90,8 +93,8 @@ class CibilScoreModel:
             train_score = self.model.score(X_train_scaled, y_train)
             test_score = self.model.score(X_test_scaled, y_test)
             
-            print(f"Training Score: {train_score:.4f}")
-            print(f"Testing Score: {test_score:.4f}")
+            print(f"✅ Training Score: {train_score:.4f}")
+            print(f"✅ Testing Score: {test_score:.4f}")
             
             # Feature importance
             feature_importance = dict(zip(self.feature_names, 
@@ -103,13 +106,48 @@ class CibilScoreModel:
             
             # Save model and scaler
             self.save_model()
-            
+
+            # Convert to TFLite and save
+            self.convert_to_tflite()
+
             return self.model
             
         except Exception as e:
             print(f"Error in train: {str(e)}")
             raise
-    
+
+    def convert_to_tflite(self):
+        """ Convert the trained model to TFLite format """
+        try:
+            print("⚡ Converting model to TensorFlow Lite format...")
+            model_path = self.tflite_path
+
+            # Define a simple neural network with one output neuron
+            tf_model = tf.keras.Sequential([
+                tf.keras.layers.Dense(1, input_shape=(len(self.feature_names),))
+            ])
+
+            # Convert RandomForest feature importance into neural network weights
+            initial_weights = [
+                np.expand_dims(self.model.feature_importances_, axis=-1),  # Weights
+                np.array([0.0])  # Bias
+            ]
+            tf_model.set_weights(initial_weights)
+
+            # Convert to TensorFlow Lite
+            converter = tf.lite.TFLiteConverter.from_keras_model(tf_model)
+            tflite_model = converter.convert()
+
+            # Save TFLite model
+            with open(model_path, 'wb') as f:
+                f.write(tflite_model)
+
+            print(f"✅ TFLite model saved at: {model_path}")
+
+        except Exception as e:
+            print(f"❌ Error converting to TFLite: {str(e)}")
+            raise
+
     def save_model(self):
         try:
             # Save the model
@@ -124,143 +162,43 @@ class CibilScoreModel:
             with open('model/feature_names.pkl', 'wb') as f:
                 pickle.dump(self.feature_names, f)
                 
-            print(f"Model saved to {self.model_path}")
-            print(f"Scaler saved to {self.scaler_path}")
+            print(f"✅ Model saved to {self.model_path}")
+            print(f"✅ Scaler saved to {self.scaler_path}")
             
         except Exception as e:
-            print(f"Error in save_model: {str(e)}")
-            raise
-    
-    def load_model(self):
-        try:
-            # Load the model
-            with open(self.model_path, 'rb') as f:
-                self.model = pickle.load(f)
-            
-            # Load the scaler
-            with open(self.scaler_path, 'rb') as f:
-                self.scaler = pickle.load(f)
-            
-            # Load feature names
-            with open('model/feature_names.pkl', 'rb') as f:
-                self.feature_names = pickle.load(f)
-                
-        except Exception as e:
-            print(f"Error in load_model: {str(e)}")
-            raise
-    
-    def predict(self, input_data):
-        try:
-            if self.model is None:
-                self.load_model()
-            
-            # Create input array with the same features used in training
-            input_values = []
-            for feature in self.feature_names:
-                if feature in input_data:
-                    input_values.append(float(input_data[feature]))
-                else:
-                    # If feature is missing, use a default value
-                    print(f"Warning: Missing feature {feature} in input data")
-                    input_values.append(0.0)
-            
-            input_array = np.array([input_values])
-            
-            # Scale input
-            input_scaled = self.scaler.transform(input_array)
-            
-            # Make prediction
-            prediction = self.model.predict(input_scaled)[0]
-            
-            # CIBIL scores are typically between 300 and 900
-            prediction = max(300, min(900, int(round(prediction))))
-            
-            return prediction
-            
-        except Exception as e:
-            print(f"Error in predict: {str(e)}")
+            print(f"❌ Error in save_model: {str(e)}")
             raise
 
-# Initialize Firebase
-def initialize_firebase():
+def deploy_to_firebase():
+    """ Uploads the TFLite model to Firebase Storage """
     try:
-        cred = credentials.Certificate('./credentials/loanscope-9f38b-firebase-adminsdk-fbsvc-3b3f380bbc.json')
-        if not firebase_admin._apps:  # Check if already initialized
-            firebase_admin.initialize_app(cred, {
-                'storageBucket': 'loanscope-9f38b.appspot.com'  # Add your Firebase storage bucket
-            })
-    except Exception as e:
-        print(f"Error initializing Firebase: {str(e)}")
-        raise
+        if not firebase_admin._apps:
+            cred = credentials.Certificate('F:/loanscope/credentials/loanscope-9f38b-firebase-adminsdk-fbsvc-3b3f380bbc.json')
 
-# Deploy model to Firebase ML
-def deploy_to_firebase(model):
-    try:
-        import tensorflow as tf
-        from firebase_admin import storage
-        
-        # Get bucket
+            firebase_admin.initialize_app(cred, {'storageBucket': 'loanscope-9f38b.firebasestorage.app'})
+
         bucket = storage.bucket()
-        
-        # Convert the model to TensorFlow format
-        model_path = 'model/model.tflite'
-        
-        # Create a TF SavedModel format with proper weights and bias
-        tf_model = tf.keras.Sequential([
-            tf.keras.layers.Dense(1, input_shape=(len(model.feature_names),))
-        ])
-        
-        # Initialize the weights properly
-        initial_weights = [
-            model.model.feature_importances_.reshape(-1, 1),  # weights
-            np.array([0.0])  # bias
-        ]
-        tf_model.set_weights(initial_weights)
-        
-        # Convert to TFLite
-        converter = tf.lite.TFLiteConverter.from_keras_model(tf_model)
-        converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        tflite_model = converter.convert()
-        
-        # Save the TFLite model
-        with open(model_path, 'wb') as f:
-            f.write(tflite_model)
-        
-        # Upload to Firebase Storage
         blob = bucket.blob('models/cibil_model.tflite')
-        blob.upload_from_filename(model_path)
-        
-        # Get the public URL
-        model_url = blob.public_url
-        
-        # Create Firebase ML model
-        firebase_model = ml.Model(
-            display_name='cibil_score_predictor',
-            tags=['cibil', 'credit_score'],
-            model_format=ml.TFLiteFormat(
-                model_source=ml.TFLiteGCSModelSource.from_uri(model_url)
-            )
-        )
-        
-        # Upload model to Firebase ML
-        firebase_model = ml.create_model(firebase_model)
-        print(f"Model successfully deployed to Firebase ML with name: {firebase_model.display_name}")
-        return firebase_model
-        
+        blob.upload_from_filename('model/cibil_model.tflite')
+
+        print(f"✅ Model uploaded to Firebase Storage: {blob.public_url}")
+
     except Exception as e:
-        print(f"Error deploying to Firebase: {str(e)}")
+        print(f"❌ Error uploading to Firebase: {str(e)}")
         raise
 
 def main():
     try:
-        # Train and save the model
         model = CibilScoreModel()
         model.train()
-        
-        print("Model training completed successfully!")
-        
+
+        print("✅ Model training completed successfully!")
+
+        # Deploy to Firebase ML
+        deploy_to_firebase()
+
     except Exception as e:
-        print(f"Error in main: {str(e)}")
+        print(f"❌ Error in main: {str(e)}")
         raise
 
 if __name__ == "__main__":

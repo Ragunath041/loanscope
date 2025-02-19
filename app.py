@@ -16,17 +16,17 @@ GOOGLE_MAPS_API_KEY = os.getenv("AIzaSyBqPxfYB_XmfZ-WfImTphSu4QaZqUSSLn4")
 
 @app.route('/search_nearby_banks', methods=['GET'])
 def search_nearby_banks():
-    """Fetch nearby banks using Google Places API without CORS issues."""
+    """Fetch the nearest bank using Google Places API."""
     try:
         location = request.args.get('location')  # Expected format: "lat,lng"
-        radius = request.args.get('radius', 10000)  # Default: 10 km
+        radius = request.args.get('radius', 5000)  # Default: 5 km
         bank_name = request.args.get('bank_name', '')
 
         if not location:
             return jsonify({"status": "error", "message": "Location is required"}), 400
 
-        # Google Places API URL
-        url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        # Google Places API URL (corrected)
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
             "location": location,
             "radius": radius,
@@ -38,23 +38,28 @@ def search_nearby_banks():
         response = requests.get(url, params=params)
         data = response.json()
 
-        if data['status'] != 'OK':
-            return jsonify({"status": "error", "message": "No banks found nearby"}), 404
+        # Debugging: Print the full response to check errors
+        print("Google API Response:", data)
 
-        # Extract relevant information
-        results = []
-        for place in data.get('results', []):
-            results.append({
-                "name": place.get("name"),
-                "vicinity": place.get("vicinity"),
-                "location": place.get("geometry", {}).get("location"),
-                "rating": place.get("rating"),
-                "user_ratings_total": place.get("user_ratings_total"),
-                "place_id": place.get("place_id"),
-                "icon": place.get("icon"),
-            })
+        if data.get('status') != 'OK' or 'results' not in data:
+            return jsonify({"status": "error", "message": data.get('error_message', 'No banks found nearby')}), 404
 
-        return jsonify({"status": "success", "results": results})
+        # Find the nearest bank (first result)
+        nearest_bank = data['results'][0]
+
+        # Extract relevant details
+        bank_info = {
+            "name": nearest_bank.get("name"),
+            "vicinity": nearest_bank.get("vicinity"),
+            "location": nearest_bank.get("geometry", {}).get("location"),
+            "rating": nearest_bank.get("rating"),
+            "user_ratings_total": nearest_bank.get("user_ratings_total"),
+            "place_id": nearest_bank.get("place_id"),
+            "icon": nearest_bank.get("icon"),
+            "google_maps_url": f"https://www.google.com/maps/search/?api=1&query={nearest_bank['geometry']['location']['lat']},{nearest_bank['geometry']['location']['lng']}"
+        }
+
+        return jsonify({"status": "success", "nearest_bank": bank_info})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
